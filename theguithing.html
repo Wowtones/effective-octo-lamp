@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>px</title>
+  <!-- VT323 pixel font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+      text-shadow: none !important;
+    }
+
+    body {
+      background: #0d0d0d;
+      color: #a0a0a0;
+      font-family: 'VT323', monospace;
+      font-size: 18px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px;
+      gap: 8px;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    /* Top Bar */
+    #bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      width: min(94vw, 512px);
+      background: #141414;
+      border: 1px solid #333333;
+      padding: 4px 8px;
+    }
+
+    .section {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    #room-label {
+      color: #ffffff;
+      font-size: 20px;
+    }
+
+    #status {
+      font-size: 18px;
+      text-transform: uppercase;
+    }
+
+    #status.online { color: #00ff66; }
+    #status.connecting { color: #ffaa00; }
+    #status.error { color: #ff2222; }
+
+    select {
+      background: #000000;
+      border: 1px solid #444444;
+      color: #00ffff;
+      font-family: inherit;
+      font-size: 16px;
+      padding: 1px 4px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    /* Canvas Frame */
+    #canvas-wrap {
+      border: 1px solid #333333;
+      background: #000000;
+      line-height: 0;
+    }
+
+    #grid-canvas {
+      display: block;
+      width: min(94vw, 512px);
+      height: min(94vw, 512px);
+      image-rendering: pixelated;
+      cursor: crosshair;
+    }
+
+    /* Palette */
+    #palette-wrap {
+      display: flex;
+      gap: 6px;
+      width: min(94vw, 512px);
+      background: #141414;
+      border: 1px solid #333333;
+      padding: 6px;
+    }
+
+    #current-color {
+      width: 28px;
+      height: 28px;
+      border: 1px solid #555555;
+      flex-shrink: 0;
+    }
+
+    #palette-grid {
+      display: grid;
+      grid-template-columns: repeat(32, 1fr);
+      gap: 1px;
+      flex-grow: 1;
+      background: #222222;
+      border: 1px solid #222222;
+    }
+
+    .swatch {
+      aspect-ratio: 1;
+      cursor: pointer;
+    }
+
+    .swatch.active {
+      outline: 1px solid #ffffff;
+      z-index: 2;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="bar">
+    <div class="section">
+      <span id="room-label">#lobby</span>
+      <span id="status" class="connecting">DISCONNECTED</span>
+    </div>
+
+    <div class="section">
+      <label for="size">SIZE:</label>
+      <select id="size">
+        <option value="1">1PX</option>
+        <option value="2">2PX</option>
+        <option value="3">3PX</option>
+        <option value="4">4PX</option>
+        <option value="6">6PX</option>
+        <option value="8">8PX</option>
+      </select>
+    </div>
+  </div>
+
+  <div id="canvas-wrap">
+    <canvas id="grid-canvas"></canvas>
+  </div>
+
+  <div id="palette-wrap">
+    <div id="current-color"></div>
+    <div id="palette-grid"></div>
+  </div>
+
+  <script>
+    // 1. Force default room to #lobby
+    if (!window.location.hash || window.location.hash === '#') {
+      window.location.hash = '#lobby';
+    }
+    const ROOM_ID = window.location.hash.slice(1).toLowerCase();
+    document.getElementById('room-label').textContent = `#${ROOM_ID}`;
+
+    // 2. Setup Canvas & Context
+    const GRID_SIZE = 128;
+    const canvas = document.getElementById('grid-canvas');
+    const ctx = canvas.getContext('2d');
+    const paletteGrid = document.getElementById('palette-grid');
+    const currentColorBox = document.getElementById('current-color');
+    const sizeSelect = document.getElementById('size');
+    const statusText = document.getElementById('status');
+
+    canvas.width = GRID_SIZE;
+    canvas.height = GRID_SIZE;
+    ctx.imageSmoothingEnabled = false;
+
+    // 3. Build xterm 256 Palette
+    const XTERM = [];
+    const ansi16 = [
+      [0,0,0], [128,0,0], [0,128,0], [128,128,0], [0,0,128], [128,0,128], [0,128,128], [192,192,192],
+      [128,128,128], [255,0,0], [0,255,0], [255,255,0], [0,0,255], [255,0,255], [0,255,255], [255,255,255]
+    ];
+    ansi16.forEach(c => XTERM.push([...c, 255]));
+
+    const cube = [0, 95, 135, 175, 215, 255];
+    for (let r = 0; r < 6; r++) {
+      for (let g = 0; g < 6; g++) {
+        for (let b = 0; b < 6; b++) {
+          XTERM.push([cube[r], cube[g], cube[b], 255]);
+        }
+      }
+    }
+    for (let i = 0; i < 24; i++) {
+      const v = 8 + i * 10;
+      XTERM.push([v, v, v, 255]);
+    }
+
+    const boardState = new Uint8Array(GRID_SIZE * GRID_SIZE);
+    const imageData = ctx.createImageData(GRID_SIZE, GRID_SIZE);
+
+    let selectedColor = 15; // default white
+    let brushSize = 1;
+    let isDrawing = false;
+    let lastPoint = null;
+
+    function selectColor(idx) {
+      selectedColor = idx;
+      const [r, g, b] = XTERM[idx];
+      currentColorBox.style.backgroundColor = `rgb(${r},${g},${b})`;
+      document.querySelectorAll('.swatch.active').forEach(el => el.classList.remove('active'));
+      paletteGrid.children[idx]?.classList.add('active');
+    }
+
+    XTERM.forEach((rgba, idx) => {
+      const el = document.createElement('div');
+      el.className = 'swatch';
+      el.style.backgroundColor = `rgb(${rgba[0]},${rgba[1]},${rgba[2]})`;
+      el.addEventListener('click', () => selectColor(idx));
+      paletteGrid.appendChild(el);
+    });
+    selectColor(15);
+
+    sizeSelect.addEventListener('change', (e) => {
+      brushSize = parseInt(e.target.value, 10);
+    });
+
+    function setPixel(x, y, colorIdx, batch = false) {
+      if (x < 0 || x >= GRID_SIZE || y < 0 || y >= GRID_SIZE) return;
+      boardState[y * GRID_SIZE + x] = colorIdx;
+      const i = (y * GRID_SIZE + x) * 4;
+      const [r, g, b, a] = XTERM[colorIdx];
+      imageData.data[i] = r;
+      imageData.data[i + 1] = g;
+      imageData.data[i + 2] = b;
+      imageData.data[i + 3] = a;
+      if (!batch) ctx.putImageData(imageData, 0, 0);
+    }
+
+    function renderAll() {
+      for (let i = 0; i < boardState.length; i++) {
+        const [r, g, b, a] = XTERM[boardState[i]];
+        imageData.data[i * 4] = r;
+        imageData.data[i * 4 + 1] = g;
+        imageData.data[i * 4 + 2] = b;
+        imageData.data[i * 4 + 3] = a;
+      }
+      ctx.putImageData(imageData, 0, 0);
+    }
+    renderAll();
+
+    // 4. Drawing & Line Calculations
+    function getLine(x0, y0, x1, y1) {
+      const pts = [];
+      const dx = Math.abs(x1 - x0), dy = Math.abs(y1 - y0);
+      const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+      let err = dx - dy;
+      while (true) {
+        pts.push({ x: x0, y: y0 });
+        if (x0 === x1 && y0 === y1) break;
+        const e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx) { err += dx; y0 += sy; }
+      }
+      return pts;
+    }
+
+    function getBrushPoints(cx, cy, size) {
+      const pts = [];
+      if (size <= 1) {
+        if (cx >= 0 && cx < GRID_SIZE && cy >= 0 && cy < GRID_SIZE) pts.push({ x: cx, y: cy });
+        return pts;
+      }
+      const r = (size - 1) / 2;
+      const rSq = r * r;
+      const min = -Math.floor(r);
+      const max = Math.ceil(r);
+
+      for (let dy = min; dy <= max; dy++) {
+        for (let dx = min; dx <= max; dx++) {
+          if (size === 2 || (dx * dx + dy * dy <= rSq + 0.25)) {
+            const px = cx + dx;
+            const py = cy + dy;
+            if (px >= 0 && px < GRID_SIZE && py >= 0 && py < GRID_SIZE) {
+              pts.push({ x: px, y: py });
+            }
+          }
+        }
+      }
+      return pts;
+    }
+
+    function getCoords(e) {
+      const rect = canvas.getBoundingClientRect();
+      const cx = e.touches ? e.touches[0].clientX : e.clientX;
+      const cy = e.touches ? e.touches[0].clientY : e.clientY;
+      return {
+        x: Math.max(0, Math.min(GRID_SIZE - 1, Math.floor((cx - rect.left) / (rect.width / GRID_SIZE)))),
+        y: Math.max(0, Math.min(GRID_SIZE - 1, Math.floor((cy - rect.top) / (rect.height / GRID_SIZE))))
+      };
+    }
+
+    function onDrawStart(e) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      e.preventDefault();
+      isDrawing = true;
+      const pt = getCoords(e);
+      lastPoint = pt;
+
+      const pts = getBrushPoints(pt.x, pt.y, brushSize);
+      const updates = [];
+      pts.forEach(p => {
+        setPixel(p.x, p.y, selectedColor, true);
+        updates.push({ x: p.x, y: p.y, c: selectedColor });
+      });
+      ctx.putImageData(imageData, 0, 0);
+      sendDraw(updates);
+    }
+
+    function onDrawMove(e) {
+      if (!isDrawing || !ws || ws.readyState !== WebSocket.OPEN) return;
+      e.preventDefault();
+      const pt = getCoords(e);
+      if (pt.x !== lastPoint.x || pt.y !== lastPoint.y) {
+        const line = getLine(lastPoint.x, lastPoint.y, pt.x, pt.y);
+        const seen = new Set();
+        const updates = [];
+
+        for (const lp of line) {
+          const footprint = getBrushPoints(lp.x, lp.y, brushSize);
+          for (const fp of footprint) {
+            const key = fp.y * GRID_SIZE + fp.x;
+            if (!seen.has(key)) {
+              seen.add(key);
+              setPixel(fp.x, fp.y, selectedColor, true);
+              updates.push({ x: fp.x, y: fp.y, c: selectedColor });
+            }
+          }
+        }
+        ctx.putImageData(imageData, 0, 0);
+        if (updates.length) sendDraw(updates);
+        lastPoint = pt;
+      }
+    }
+
+    function onDrawEnd(e) {
+      if (e.cancelable) e.preventDefault();
+      isDrawing = false;
+      lastPoint = null;
+    }
+
+    canvas.addEventListener('mousedown', onDrawStart);
+    window.addEventListener('mousemove', onDrawMove);
+    window.addEventListener('mouseup', onDrawEnd);
+
+    canvas.addEventListener('touchstart', onDrawStart, { passive: false });
+    window.addEventListener('touchmove', onDrawMove, { passive: false });
+    window.addEventListener('touchend', onDrawEnd);
+
+    // ==========================================
+    // 5. WEBSOCKET PROTOCOL
+    // ==========================================
+    // If hosted online, connects via wss:// to the current domain;
+    // Otherwise defaults to ws://localhost:8080 when testing locally.
+    const WS_URL = window.location.host
+      ? `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+      : 'ws://localhost:8080';
+
+    let ws = null;
+
+    function sendDraw(pixels) {
+      if (!pixels.length || !ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ type: 'draw', pixels }));
+    }
+
+    function connect() {
+      statusText.className = 'connecting';
+      statusText.textContent = 'CONNECTING...';
+
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        // Send join event with the room id
+        ws.send(JSON.stringify({ type: 'join', room: ROOM_ID }));
+      };
+
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === 'init') {
+          // Received full canvas state from server
+          boardState.set(msg.board);
+          renderAll();
+          statusText.className = 'online';
+          statusText.textContent = `${msg.users || 1} ONLINE`;
+        } else if (msg.type === 'draw') {
+          // Another user drew pixels
+          msg.pixels.forEach(p => setPixel(p.x, p.y, p.c, true));
+          ctx.putImageData(imageData, 0, 0);
+        } else if (msg.type === 'users') {
+          // Connected player count update
+          statusText.className = 'online';
+          statusText.textContent = `${msg.count} ONLINE`;
+        }
+      };
+
+      ws.onclose = () => {
+        statusText.className = 'error';
+        statusText.textContent = 'RETRYING...';
+        setTimeout(connect, 1500);
+      };
+
+      ws.onerror = () => {
+        ws.close();
+      };
+    }
+
+    connect();
+  </script>
+</body>
+</html>
